@@ -1,0 +1,8 @@
+# Build output (rebuilt by `make`)
+build/
+dist/
+dep/
+plugin.dll
+plugin.so
+plugin.dylib
+build.log

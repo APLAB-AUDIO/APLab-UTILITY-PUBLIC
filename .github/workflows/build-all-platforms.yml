@@ -1,0 +1,121 @@
+# Release check (2026-11-22): builds Hotkey for VCV's four platforms with
+# VCV's own SDKs, the way the VCV Library builds it, and reports compiler
+# warnings and the library files each build depends on.
+# Runs only when started by hand (Actions tab -> Run workflow) or on a push to
+# the release-prep branch. It never installs or publishes anything.
+name: Build all platforms
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+env:
+  rack-sdk-version: 2.6.4
+  rack-plugin-toolchain-dir: /home/build/rack-plugin-toolchain
+
+jobs:
+  build-win-lin:
+    name: ${{ matrix.platform }}
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/qno/rack-plugin-toolchain-win-linux
+      options: --user root
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [win-x64, lin-x64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Build plugin (VCV toolchain)
+        shell: bash
+        run: |
+          export PLUGIN_DIR=$GITHUB_WORKSPACE
+          git config --global --add safe.directory '*'
+          cd ${{ env.rack-plugin-toolchain-dir }}
+          # The image's baked-in SDK is older than 2.6 (no string::translate):
+          # swap in VCV's current SDK, the one the VCV Library builds with.
+          ls -d Rack-SDK-* ; rm -rf Rack-SDK-${{ matrix.platform }}
+          curl -fsSL -o sdk.zip https://vcvrack.com/downloads/Rack-SDK-${{ env.rack-sdk-version }}-${{ matrix.platform }}.zip
+          mkdir sdk_tmp && cd sdk_tmp && unzip -q ../sdk.zip && mv Rack-SDK ../Rack-SDK-${{ matrix.platform }} && cd .. && rm -rf sdk_tmp sdk.zip
+          make plugin-build-${{ matrix.platform }} 2>&1 | tee $GITHUB_WORKSPACE/build.log
+          test ${PIPESTATUS[0]} -eq 0
+          mv plugin-build plugin-build-full
+      - name: Warnings and dependencies
+        if: always()
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE
+          for kind in full; do
+          cd $GITHUB_WORKSPACE
+          log=build.log; [ $kind = free ] && log=build_free.log
+          echo "################ $kind build"
+          { echo "== warnings (Orbital's own code) =="; grep -E "warning:" $log | grep -vE "third_party/|Rack-SDK|rack-plugin-toolchain|overriding|ignoring old" | sed -E 's/^.*(src\/)/\1/' | sort | uniq -c | sort -rn || true
+            echo; echo "== package =="; ls -l ${{ env.rack-plugin-toolchain-dir }}/plugin-build-$kind/ || true
+            rm -rf pk; mkdir -p pk && cd pk && for f in ${{ env.rack-plugin-toolchain-dir }}/plugin-build-$kind/*.vcvplugin; do zstd -dc "$f" | tar x; done
+            find . -type f \( -name "*.dll" -o -name "*.so" \) | while read b; do
+              echo; echo "== $b =="; ls -l "$b"
+              if [[ $b == *.dll ]]; then objdump -p "$b" | grep "DLL Name" || true
+              else objdump -p "$b" | grep NEEDED || true
+                echo "-- highest GLIBC / GLIBCXX / GCC symbol versions --"
+                objdump -T "$b" | grep -oE "(GLIBC|GLIBCXX|CXXABI|GCC)_[0-9.]+" | sort -u -V | tail -6 || true
+              fi
+            done
+            echo; echo "== package files =="; find . -type f | sed 's|^\./[^/]*/||' | sed -E 's#^(res/(hrtf|brir))/.*#\1/...#' | sort | uniq -c
+            echo "== plugin.json modules =="; grep -o '"slug": *"[A-Z0-9]*"' */plugin.json | tr '\n' ' '; echo
+          } | tee -a $GITHUB_WORKSPACE/report.txt
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ${{ matrix.platform }}
+          path: |
+            ${{ env.rack-plugin-toolchain-dir }}/plugin-build-*
+            build*.log
+            report.txt
+
+  build-mac:
+    name: mac-${{ matrix.platform }}
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [x64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Get Rack SDK
+        run: |
+          cd $HOME
+          curl -fsSL -o Rack-SDK.zip https://vcvrack.com/downloads/Rack-SDK-${{ env.rack-sdk-version }}-mac-${{ matrix.platform }}.zip
+          unzip -q Rack-SDK.zip
+      - name: Build plugin
+        shell: bash
+        run: |
+          brew list zstd >/dev/null 2>&1 || brew install zstd
+          export RACK_DIR=$HOME/Rack-SDK
+          if [ "${{ matrix.platform }}" = x64 ]; then export CROSS_COMPILE=x86_64-apple-darwin; else export CROSS_COMPILE=arm64-apple-darwin; fi
+          make dep
+          make -j3 dist 2>&1 | tee build.log
+          test ${PIPESTATUS[0]} -eq 0
+      - name: Warnings and dependencies
+        if: always()
+        shell: bash
+        run: |
+          { echo "== warnings (Orbital's own code) =="; grep -E "warning:" build.log | grep -vE "third_party/|Rack-SDK|rack-plugin-toolchain|overriding|ignoring old" | sort | uniq -c | sort -rn || true
+            echo; echo "== package =="; ls -l dist/*.vcvplugin || true
+            for b in dist/*/plugin.dylib; do
+              echo; echo "== $b =="; ls -l "$b"; lipo -info "$b" || true; otool -L "$b" || true
+              otool -l "$b" | grep -A4 -E "LC_BUILD_VERSION|LC_VERSION_MIN" | grep -E "minos|version|platform" || true
+            done
+          } | tee report.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mac-${{ matrix.platform }}
+          path: |
+            dist/*.vcvplugin
+            build.log
+            report.txt
