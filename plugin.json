@@ -16,7 +16,7 @@
     {
       "slug": "HOTKEY",
       "name": "Hotkey",
-      "description": "Play any module from your computer keyboard, dial or MIDI controller, without the mouse.",
+      "description": "Navigate your rack with hotkeys: jump to any module and play it from your keyboard, dial or MIDI controller.",
       "tags": [
         "Utility",
         "Controller",

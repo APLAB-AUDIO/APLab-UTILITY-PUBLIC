@@ -1,4 +1,4 @@
-# Hotkey — play VCV Rack without the mouse
+# Hotkey — play your rack like an instrument
 
 **Hotkey** (plugin *APLab Utility* by AP Lab) turns your computer keyboard, its volume dial or a mouse wheel, a game controller or a MIDI controller into a hands-on control surface for **any** module in your patch. It makes no sound and has no jacks, so it costs nothing on the audio thread.
 
